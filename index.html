@@ -638,6 +638,7 @@ PH = 5
                 const [code, time] = line.split("=").map(s => s.trim());
                 if (code && time) SHIFT_MAP[code.toUpperCase()] = time;
             });
+            console.log("更期代号加载完成：", SHIFT_MAP); // 调试用
         }
 
         /* ============================
@@ -653,10 +654,104 @@ PH = 5
         const debouncedSave = debounce(saveRoster);
 
         /* ============================
-           核心事件监听
+           自动填充工时（修复增强版）
         ============================ */
+        function autoFillShift(cell) {
+            // 严格清理输入内容：去空格 + 转大写
+            const code = cell.textContent.trim().toUpperCase();
+            const hoursCell = cell.parentElement.querySelector(".hours");
+            
+            // 1. 假期代码直接填0
+            if (HOLIDAY_CODES.has(code)) {
+                cell.textContent = code; // 统一格式
+                hoursCell.textContent = "0";
+                return;
+            }
+            
+            // 2. 匹配更期代号对应的工时
+            const shiftTime = SHIFT_MAP[code];
+            if (shiftTime) {
+                const hours = parseHours(shiftTime);
+                hoursCell.textContent = hours.toFixed(1);
+                console.log(`代号${code}匹配工时：${shiftTime} → ${hours.toFixed(1)}小时`); // 调试用
+            } else {
+                // 3. 无匹配时尝试解析手动输入的时间（兼容直接输时间的场景）
+                const hours = parseHours(code);
+                hoursCell.textContent = hours.toFixed(1);
+            }
+        }
+
+        /* ============================
+           工时计算核心函数
+        ============================ */
+        function parseHours(str) {
+            if (!str) return 0;
+            const upper = str.toUpperCase();
+            if (HOLIDAY_CODES.has(upper)) return 0;
+            const m = str.match(/(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})/);
+            if (!m) return 0;
+            const s = parseInt(m[1]) * 60 + parseInt(m[2]);
+            const e = parseInt(m[3]) * 60 + parseInt(m[4]);
+            const hours = e > s ? (e - s) / 60 : 0;
+            return hours;
+        }
+
+        function calcRow(row) {
+            let total = 0;
+            const days = row.querySelectorAll(".day");
+            days.forEach(day => {
+                const hoursCell = day.querySelector(".hours");
+                let h = parseFloat(hoursCell.textContent) || 0;
+                total += h;
+            });
+            row.querySelector(".total").textContent = total.toFixed(1);
+            calcDailyTotals();
+        }
+
+        function calcDailyTotals() {
+            const rows = [...document.getElementById("rosterBody").rows];
+            if (rows.length === 0) return;
+            const firstRowDays = rows[0].querySelectorAll(".day");
+            const dayTotals = Array(firstRowDays.length).fill(0);
+            rows.forEach(row => {
+                row.querySelectorAll(".day").forEach((cell, idx) => {
+                    const h = parseFloat(cell.querySelector(".hours").textContent) || 0;
+                    dayTotals[idx] += h;
+                });
+            });
+            document.querySelectorAll("#dailyTotalRow .dayTotal").forEach((val, idx) => {
+                val.textContent = dayTotals[idx].toFixed(1);
+            });
+        }
+
+        /* ============================
+           核心事件监听（增强版）
+        ============================ */
+        document.addEventListener("input", e => {
+            if (!e.target.closest("#rosterTable")) return;
+            
+            const shiftCell = e.target.closest(".shift");
+            if (shiftCell) {
+                // 立即触发自动填充（解决输入后不生效）
+                autoFillShift(shiftCell);
+                const row = shiftCell.closest("tr");
+                if (row) calcRow(row);
+            }
+            
+            // 工时单元格手动修改后重新计算行总和
+            const hoursCell = e.target.closest(".hours");
+            if (hoursCell) {
+                const row = hoursCell.closest("tr");
+                if (row) calcRow(row);
+            }
+            
+            debouncedSave();
+        });
+
+        // 更期代号编辑器修改后，强制刷新所有已输入的代号（解决修改列表后不同步）
         document.getElementById("shiftCodeEditor").addEventListener("input", () => {
             loadShiftCodes();
+            // 遍历所有更期单元格，重新触发自动填充
             document.querySelectorAll(".shift").forEach(shiftCell => {
                 autoFillShift(shiftCell);
                 const row = shiftCell.closest("tr");
@@ -665,28 +760,26 @@ PH = 5
             calcDailyTotals();
             debouncedSave();
         });
-        document.getElementById("coffeeNameInput").addEventListener("input", (e) => {
-            e.stopPropagation();
-            debouncedSave();
-        });
-        document.querySelector(".labour-target-editor").addEventListener("input", (e) => {
-            e.stopPropagation();
-            debouncedSave();
-        });
 
         /* ============================
-           自动填充工时
+           重建员工行
         ============================ */
-        function autoFillShift(cell) {
-            const code = cell.textContent.trim().toUpperCase();
-            const hoursCell = cell.parentElement.querySelector(".hours");
-            if (HOLIDAY_CODES.has(code)) {
-                cell.textContent = code;
-                hoursCell.textContent = "0";
-                return;
+        function rebuildRow(row, days) {
+            while (row.cells.length > 2) row.deleteCell(2);
+            for (let i = 0; i < days; i++) {
+                const td = document.createElement("td");
+                td.className = "day";
+                td.innerHTML = `<div class="cell-wrap"><div class="shift" contenteditable="true"></div><div class="hours" contenteditable="true">0</div><div class="remark" contenteditable="true"></div></div>`;
+                row.appendChild(td);
             }
-            const hours = parseHours(SHIFT_MAP[code] || code);
-            hoursCell.textContent = hours.toFixed(1);
+            const total = document.createElement("td");
+            total.className = "total";
+            total.textContent = "0";
+            row.appendChild(total);
+            const sigTd = document.createElement("td");
+            sigTd.className = "signature-cell";
+            sigTd.innerHTML = `<canvas class="signature-pad" width="100" height="80"></canvas><button class="clear-signature">${LANG[currentLang].clear}</button>`;
+            row.appendChild(sigTd);
         }
 
         /* ============================
@@ -719,73 +812,6 @@ PH = 5
             weekdayRow.innerHTML += `<th>${L.total}</th><th class="signature-col">${L.signature}</th>`;
             dateRow.innerHTML += `<th></th><th></th>`;
             dailyTotalRow.innerHTML += `<td></td><td></td>`;
-        }
-
-        /* ============================
-           重建员工行
-        ============================ */
-        function rebuildRow(row, days) {
-            while (row.cells.length > 2) row.deleteCell(2);
-            for (let i = 0; i < days; i++) {
-                const td = document.createElement("td");
-                td.className = "day";
-                td.innerHTML = `<div class="cell-wrap"><div class="shift" contenteditable="true"></div><div class="hours" contenteditable="true">0</div><div class="remark" contenteditable="true"></div></div>`;
-                row.appendChild(td);
-            }
-            const total = document.createElement("td");
-            total.className = "total";
-            total.textContent = "0";
-            row.appendChild(total);
-            const sigTd = document.createElement("td");
-            sigTd.className = "signature-cell";
-            sigTd.innerHTML = `<canvas class="signature-pad" width="100" height="80"></canvas><button class="clear-signature">${LANG[currentLang].clear}</button>`;
-            row.appendChild(sigTd);
-        }
-
-        /* ============================
-           工时计算
-        ============================ */
-        function parseHours(str) {
-            if (!str) return 0;
-            const upper = str.toUpperCase();
-            if (HOLIDAY_CODES.has(upper)) return 0;
-            const m = str.match(/(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})/);
-            if (!m) return 0;
-            const s = parseInt(m[1]) * 60 + parseInt(m[2]);
-            const e = parseInt(m[3]) * 60 + parseInt(m[4]);
-            return e > s ? (e - s) / 60 : 0;
-        }
-        function calcRow(row) {
-            let total = 0;
-            const days = row.querySelectorAll(".day");
-            days.forEach(day => {
-                const shift = day.querySelector(".shift").textContent.trim();
-                const hoursCell = day.querySelector(".hours");
-                let h = parseHours(shift);
-                if (document.activeElement !== hoursCell) {
-                    hoursCell.textContent = h.toFixed(1);
-                } else {
-                    h = parseFloat(hoursCell.textContent) || 0;
-                }
-                total += h;
-            });
-            row.querySelector(".total").textContent = total.toFixed(1);
-            calcDailyTotals();
-        }
-        function calcDailyTotals() {
-            const rows = [...document.getElementById("rosterBody").rows];
-            if (rows.length === 0) return;
-            const firstRowDays = rows[0].querySelectorAll(".day");
-            const dayTotals = Array(firstRowDays.length).fill(0);
-            rows.forEach(row => {
-                row.querySelectorAll(".day").forEach((cell, idx) => {
-                    const h = parseFloat(cell.querySelector(".hours").textContent) || 0;
-                    dayTotals[idx] += h;
-                });
-            });
-            document.querySelectorAll("#dailyTotalRow .dayTotal").forEach((val, idx) => {
-                val.textContent = dayTotals[idx].toFixed(1);
-            });
         }
 
         /* ============================
@@ -967,6 +993,7 @@ PH = 5
                                     const shiftCell = dayCell.querySelector(".shift");
                                     if (shiftCell && dayData.shift) {
                                         shiftCell.textContent = dayData.shift;
+                                        // 加载数据后立即触发自动填充
                                         autoFillShift(shiftCell);
                                     }
                                     if (dayCell.querySelector(".hours") && dayData.hours) dayCell.querySelector(".hours").textContent = dayData.hours;
@@ -995,22 +1022,6 @@ PH = 5
                 alert(`加載失敗！\n錯誤：${error.message || "未知錯誤"}\n請檢查網絡或刷新頁面`);
             }
         }
-
-        /* ============================
-           全局输入监听
-        ============================ */
-        document.addEventListener("input", e => {
-            if (!e.target.closest("#rosterTable")) return;
-            const shiftCell = e.target.closest(".shift");
-            if (shiftCell) {
-                autoFillShift(shiftCell);
-                const row = shiftCell.closest("tr");
-                if (row) calcRow(row);
-            }
-            const row = e.target.closest("tr");
-            if (row && row.parentElement.id === "rosterBody" && !shiftCell) calcRow(row);
-            debouncedSave();
-        });
 
         /* ============================
            按钮事件
@@ -1065,7 +1076,7 @@ PH = 5
             // 初始化年份选择框
             initYearSelect();
             
-            loadShiftCodes();
+            loadShiftCodes(); // 页面加载时立即加载更期代号
             const monthSelect = document.getElementById("monthSelect");
             LANG.zh.months.forEach(m => {
                 const opt = document.createElement("option");
